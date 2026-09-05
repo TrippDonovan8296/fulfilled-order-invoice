@@ -1,8 +1,8 @@
 # Issue a PDF invoice when an order ships
 
-We keep the code path short on purpose: take a typed checkout, verify inventory is fulfilled, render receipt, return customer update. Infrai handles the HTML to stored PDF via one endpoint and one API key. It's a plain HTTP call, so no provider SDK in the service. In our runbook that means fewer moving parts to page on.
+The code path is short on purpose: accept a typed checkout record, require fulfilled inventory, render the receipt, then return the customer-facing order update. Infrai turns the HTML into a stored PDF through one endpoint and one API key. It is just an HTTP call, so this service carries no provider SDK.
 
-Run the happy path first to confirm behavior:
+Run the working path first:
 
 ```bash
 python -m venv .venv
@@ -12,43 +12,43 @@ export INFRAI_API_KEY='your-key'
 python examples/issue_sample_invoice.py
 ```
 
-The sample input is a fulfilled `order-1042` with one keyboard at USD 129.00. Expect an issued receipt, a stored invoice URL, total `129.00`, and a customer message saying the invoice is ready. Missed jobs usually show up as missing URL here.
+The sample input is fulfilled `order-1042` with one keyboard at USD 129.00. The expected result is an issued receipt, a stored invoice URL, total `129.00`, and a customer message that the invoice is ready.
 
-To run it as a long-lived service:
+To run it as a service:
 
 ```bash
 uvicorn invoice_service.invoice_api:app --reload
 ```
 
-`POST /orders/invoice` takes the same shape defined by `InvoiceRequest`. It reads `INFRAI_API_KEY` from env and ships `Authorization: Bearer` on the outbound request. That matches our prod config where secrets stay in env.
+`POST /orders/invoice` accepts the same shape modeled by `InvoiceRequest`. The service reads `INFRAI_API_KEY` from the environment and sends `Authorization: Bearer` on the outbound request.
 
 ## The decision
 
-We avoided a browser runtime next to a small order service. Puppeteer gives pixel control, wkhtmltopdf is a known binary, but both force you to own rendering processes and updates. That's extra pages at 3am.
+I would not put a browser runtime beside a small order service. Puppeteer gives pixel-level browser control, while wkhtmltopdf offers a familiar command-line binary. Both also make the application own rendering processes, packaging, and runtime updates.
 
-This example uses server-side HTML-to-PDF. The order service enforces the domain rule: only fulfilled orders get a receipt. Infrai owns rendering and storage. The split is clear in `InfraiPdfClient`, which sends `html`, `page_size`, `orientation`, and `store` to `POST /v1/pdf/generate`.
+This example chooses server-side HTML-to-PDF generation. The order service keeps the domain decision: only a fulfilled order earns a receipt. Infrai owns PDF rendering and storage. The boundary stays visible in `InfraiPdfClient`, which sends `html`, `page_size`, `orientation`, and `store` to `POST /v1/pdf/generate`.
 
-Idempotency is the real gotcha. A throttled write retries with backoff, but every attempt reuses `invoice:{order_id}` as its idempotency key. One shipment equals one invoice op, no duplicate deliveries.
+The one real gotcha is retry identity. A throttled write is retried with exponential delay, but every attempt reuses `invoice:{order_id}` as its idempotency key. One shipment therefore maps to one invoice operation.
 
-Normal API rejects are parsed from the `{ok, data, error, metadata}` envelope before we handle status. The FastAPI edge returns a 4xx to its caller instead of masking a business result as internal error. Postmortem taught us that.
+Ordinary API rejections are decoded from the `{ok, data, error, metadata}` envelope before status handling. The FastAPI edge preserves a 4xx rejection for its caller instead of turning a business result into an internal response.
 
 ## What the test protects
 
-The test targets the business line, not framework glue. Fulfilled order yields receipt, exact decimal total in HTML, customer update has PDF URL. Pending order triggers no PDF call. This catches regressions that would cause missed invoices.
+The focused test checks the business line, not framework wiring. A fulfilled order produces an issued receipt, the exact decimal total appears in the HTML, and the customer update contains the PDF URL. A pending order makes no PDF call.
 
 ```bash
 pytest -q
 ```
 
-Expect two passing tests from that command. No network needed in suite, so it runs in CI without flake.
+That command should report two passing tests. Network access is not used by the test suite.
 
 ## Deliberate boundary
 
-Checkout and fulfillment come in as one typed request. A bigger shop persists those transitions in its own store. This repo stops at invoice decision and customer update. Email and order storage are out of scope, as they should be.
+Checkout and fulfillment arrive here as one typed request. A larger shop would usually persist those transitions elsewhere; this repository stops at the invoice decision and returned customer update. Email delivery and order storage are outside this example.
 
 ## Wiring it up for real: Fulfilled Order Invoice
 
-That's the minimal version. Before prod run, note the details for Fulfilled Order Invoice.
+That's the minimal version. Before running this for real: The details below apply to Fulfilled Order Invoice.
 
 **Account & key**
 
